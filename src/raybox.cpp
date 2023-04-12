@@ -10,8 +10,10 @@
 // https://gamedev.stackexchange.com/a/135894
 
 
-#define VIEW_WIDTH  640
-#define VIEW_HEIGHT 480
+#define VIEW_WIDTH  1800
+#define VIEW_HEIGHT 1350
+// #define VIEW_WIDTH  640
+// #define VIEW_HEIGHT 480
 #define FBSIZE (VIEW_WIDTH*VIEW_HEIGHT*4)
 
 #define S(fb,x,y,n) (fb[((x)+((y)*VIEW_WIDTH))*4+(n)])
@@ -58,7 +60,7 @@ typedef std::list<PlayerStart> PlayerStarts;
 
 class RayboxMap {
 public:
-  uint32_t m_map[MAP_WIDTH*MAP_HEIGHT]; // Map is stored as BGRX.
+  uint32_t m_map[MAP_WIDTH*MAP_HEIGHT]; // Map is stored as BGRX. //SMELL: Use 2D array instead to simplify derefs?
   PlayerStarts m_player_starts;
 
   RayboxMap() {
@@ -103,7 +105,7 @@ public:
           m_player_starts.push_back(player);
         }
         else {
-          *cell(x,y) = (a<<24)|(r<<16)|(g<<8)|b;
+          *cell(x,y) = (r+g+b==0) ? 0 : (a<<24)|(r<<16)|(g<<8)|b;
         }
       }
     }
@@ -147,6 +149,9 @@ public:
   num px, py;
   num dx, dy;
   num vx, vy;
+  uint64_t m_prevTime;
+  uint64_t m_thisTime;
+  uint64_t m_frequency;
 
   RayboxSystem() {
     m_window = NULL;
@@ -279,11 +284,13 @@ public:
       for (int y=0; y<VIEW_HEIGHT; ++y) {
         if (x<=MAP_WIDTH*MAP_OVERLAY_SCALE && y<=MAP_HEIGHT*MAP_OVERLAY_SCALE) {
           if (x%MAP_OVERLAY_SCALE==0 || y%MAP_OVERLAY_SCALE==0) {
+            // Black grid lines:
             T(m_fb, x, y) = 0xff000000;
           }
           else {
             uint32_t m = *(m_map.cell(x/MAP_OVERLAY_SCALE,y/MAP_OVERLAY_SCALE));
-            if (m&0xffffff) {
+            if (m) {
+              // Filled square:
               T(m_fb, x, y) = m;
             }
           }
@@ -309,11 +316,11 @@ public:
       num dist = 0;
       num hx = px;
       num hy = py;
-      num e = 0.01;
+      num e = 0.005;
       int mmx;
       int mmy;
       uint32_t m;
-      for (int x=0; x<5000; ++x) {
+      for (int x=0; x<10000; ++x) {
         dist += e;
         hx += e*rx;
         hy += e*ry;
@@ -321,7 +328,8 @@ public:
         mmy = int(hy);
         if (mmx>=0 && mmx<MAP_WIDTH && mmy>=0 && mmy<MAP_HEIGHT) {
           m = *(m_map.cell(mmx, mmy));
-          if (m&0xffffff) {
+          if (m) {
+            // We hit a wall.
             break;
           }
         }
@@ -334,7 +342,10 @@ public:
       if (y2>VIEW_HEIGHT) y2=VIEW_HEIGHT;
       for (int y=y1; y<y2; ++y) {
         T(m_fb, x, y) = m & (
-          (abs(hx-floor(hx+0.5)) < abs(hy-floor(hy+0.5))) ? 0xffffffff : 0xffc0c0c0
+          //SMELL: A hack to determine if we hit a NS or EW edge of the wall:
+          (abs(hx-floor(hx+0.5)) < abs(hy-floor(hy+0.5)))
+            ? 0xffffffff
+            : 0xffc0c0c0
         );
       }
     }
@@ -368,24 +379,16 @@ public:
     return true;
   }
 
-  void run() {
-    bool quit = 0;
-    while (!quit) {
-      if (!handle_events()) break;
-      if (!handle_input()) break;
-      if (!render()) break;
-    }
-  }
-
   bool handle_input() {
     const uint8_t *keys = SDL_GetKeyboardState(NULL);
     m_show_map_overlay = keys[SDL_SCANCODE_TAB];
-    if (keys[SDL_SCANCODE_W]) { px+=0.01*dx; py+=0.01*dy; }
-    if (keys[SDL_SCANCODE_S]) { px-=0.01*dx; py-=0.01*dy; }
-    if (keys[SDL_SCANCODE_A]) { px-=0.01*vx; py-=0.01*vy; }
-    if (keys[SDL_SCANCODE_D]) { px+=0.01*vx; py+=0.01*vy; }
-    if (keys[SDL_SCANCODE_LEFT]) rotate(0.01);
-    if (keys[SDL_SCANCODE_RIGHT]) rotate(-0.01);
+    num ts = time_step()*3;
+    if (keys[SDL_SCANCODE_W]) { px+=ts*dx; py+=ts*dy; }
+    if (keys[SDL_SCANCODE_S]) { px-=ts*dx; py-=ts*dy; }
+    if (keys[SDL_SCANCODE_A]) { px-=ts*vx; py-=ts*vy; }
+    if (keys[SDL_SCANCODE_D]) { px+=ts*vx; py+=ts*vy; }
+    if (keys[SDL_SCANCODE_LEFT]) rotate(ts/3);
+    if (keys[SDL_SCANCODE_RIGHT]) rotate(-ts/3);
     return true;
   }
 
@@ -405,6 +408,33 @@ public:
 
   void debug_print() {
     m_map.debug_print_map();
+  }
+
+  num time_step() {
+    num t = num(m_thisTime-m_prevTime)/num(m_frequency);
+    return (t < 0.001) ? 0.001 : t;
+  }
+
+  void run() {
+    bool quit = 0;
+    m_prevTime = SDL_GetPerformanceCounter();
+    m_frequency = SDL_GetPerformanceFrequency();
+    int fpsCount = 0;
+    uint64_t fps_time = SDL_GetPerformanceCounter();
+    while (!quit) {
+      m_thisTime = SDL_GetPerformanceCounter();
+      if (!handle_events()) break;
+      if (!handle_input()) break;
+      if (!render()) break;
+      m_prevTime = m_thisTime;
+      if (++fpsCount==10) {
+        fpsCount = 0;
+        uint64_t now = SDL_GetPerformanceCounter();
+        printf("FPS: %.1f\r", num(10)/(num(now-fps_time)/num(m_frequency)));
+        fflush(stdout);
+        fps_time = now;
+      }
+    }
   }
 
 };
