@@ -304,14 +304,15 @@ public:
     // Current map cell:
     int mx = int(px);
     int my = int(py);
-    int nr = rand();
-    srand(123);
     // Cast rays thru horizon:
     for (int x=0; x<VIEW_WIDTH; ++x) {
+
       // Calculate the direction of THIS ray:
-      num cx = 2*x / num(VIEW_WIDTH) - 1;
+      num cx = 2*x / num(VIEW_WIDTH) - 1; // Camera x position along viewplane (-1 <= cx <= 1).
       num rx = dx + vx*cx;
       num ry = dy + vy*cx;
+      // (rx,ry) is the ray vector.
+
       // Naive ray trace by small increments:
       num dist = 0;
       num hx = px;
@@ -319,6 +320,7 @@ public:
       num e = 0.005;
       int mmx;
       int mmy;
+      int side = 0;
       uint32_t m;
       for (int x=0; x<10000; ++x) {
         dist += e;
@@ -330,39 +332,42 @@ public:
           m = *(m_map.cell(mmx, mmy));
           if (m) {
             // We hit a wall.
+            //SMELL: A hack to determine if we hit a NS or EW edge of the wall:
+            side = abs(hx-floor(hx+0.5)) < abs(hy-floor(hy+0.5));
             break;
           }
         }
       }
+      // dist is now the distance from the player to the wall hit.
+      // (hx,hy) is the point of the hit, in map space.
+      // side is 0 (NS) or 1 (EW) depending on which side of a wall we hit.
+
       // Render this column:
-      int h = VIEW_HEIGHT/2/dist;//rand() % 200;
+      int h = VIEW_HEIGHT/2/dist;
       int y1 = (VIEW_HEIGHT>>1)-h;
       int y2 = (VIEW_HEIGHT>>1)+h;
       if (y1<0) y1 = 0;
       if (y2>VIEW_HEIGHT) y2=VIEW_HEIGHT;
       for (int y=y1; y<y2; ++y) {
-        T(m_fb, x, y) = m & (
-          //SMELL: A hack to determine if we hit a NS or EW edge of the wall:
-          (abs(hx-floor(hx+0.5)) < abs(hy-floor(hy+0.5)))
-            ? 0xffffffff
-            : 0xffc0c0c0
-        );
+        // Darken, depending on the side we hit:
+        T(m_fb, x, y) = m & (side ? 0xffffffff : 0xffc0c0c0);
       }
     }
-    srand(nr);
     return true;
   }
 
   void rotate(num a) {
     num nx, ny;
+    num ca = cos(a);
+    num sa = sin(a);
     // Rotate direction vector:
-    nx =  dx*cos(a) + dy*sin(a);
-    ny = -dx*sin(a) + dy*cos(a);
+    nx =  dx*ca + dy*sa;
+    ny = -dx*sa + dy*ca;
     dx = nx;
     dy = ny;
     // Rotate viewplane vector:
-    nx =  vx*cos(a) + vy*sin(a);
-    ny = -vx*sin(a) + vy*cos(a);
+    nx =  vx*ca + vy*sa;
+    ny = -vx*sa + vy*ca;
     vx = nx;
     vy = ny;
   }
