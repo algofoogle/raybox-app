@@ -10,8 +10,10 @@
 // https://gamedev.stackexchange.com/a/135894
 
 
-#define VIEW_WIDTH  1760
-#define VIEW_HEIGHT 1320
+#define VIEW_WIDTH  1680 // 7:5 gives us square walls with an FOV of 70deg.
+#define VIEW_HEIGHT 1200
+// #define VIEW_WIDTH  1760
+// #define VIEW_HEIGHT 1320
 // #define VIEW_WIDTH  640
 // #define VIEW_HEIGHT 480
 #define FBSIZE (VIEW_WIDTH*VIEW_HEIGHT*4)
@@ -22,6 +24,8 @@
 #define G(fb,x,y) S(fb,x,y,1)
 #define B(fb,x,y) S(fb,x,y,0)
 #define A(fb,x,y) S(fb,x,y,3)
+
+#define PI 3.141592653589793
 
 #define MAP_FILE "assets/raybox-map.png"
 #define MAP_WIDTH 64
@@ -153,9 +157,11 @@ public:
   bool m_img_init;
   bool m_show_map_overlay;
   int m_frame;
-  num px, py;
-  num dx, dy;
-  num vx, vy;
+  num playerX, playerY;
+  num headingX, headingY;
+  num viewX, viewY;
+  num fov;
+  num viewMag;
   uint64_t m_prevTime;
   uint64_t m_thisTime;
   uint64_t m_frequency;
@@ -170,12 +176,14 @@ public:
     m_img_init = false;
     m_frame = 0;
     m_show_map_overlay = false;
-    px = MAP_WIDTH>>1;
-    py = MAP_HEIGHT>>1;
-    dx = 0;
-    dy = -1;
-    vx = 0.66;
-    vy = 0;
+    playerX = MAP_WIDTH>>1;
+    playerY = MAP_HEIGHT>>1;
+    headingX = 0;
+    headingY = -1;
+    fov = 70.0 * PI / 180.0; // FOV in radians.
+    viewMag = tan(fov/2.0); // Magnitude of the view plane vector (half of the total viewplane).
+    viewX = viewMag;
+    viewY = 0;
   }
 
   ~RayboxSystem() {
@@ -212,8 +220,8 @@ public:
       printf("Loaded map from %s\n", map_file);
       printf("%d player start(s)\n", (int)m_map.m_player_starts.size());
       PlayerStart player = m_map.m_player_starts.back();
-      px = player.x + 0.5;
-      py = player.y + 0.5;
+      playerX = player.x + 0.5;
+      playerY = player.y + 0.5;
       // m_map.debug_print_map();
       SDL_FreeSurface(s);
       s = NULL;
@@ -309,181 +317,87 @@ public:
       }
     }
     // Render player position:
-    num ppx = px*MAP_OVERLAY_SCALE;
-    num ppy = py*MAP_OVERLAY_SCALE;
+    num ppx = playerX*MAP_OVERLAY_SCALE;
+    num ppy = playerY*MAP_OVERLAY_SCALE;
     T(m_fb, int(ppx), int(ppy)) = 0xff00ffff;
     // Render view vector:
     for (int n=0; n<MAP_OVERLAY_SCALE; ++n) {
       num nn = num(n)/num(MAP_OVERLAY_SCALE);
-      num vvx = ppx+dx*n;
-      num vvy = ppy+dy*n;
+      num vvx = ppx+headingX*n;
+      num vvy = ppy+headingY*n;
       T(m_fb, int(vvx), int(vvy)) = 0xff00ffff;
     }
     return true;
   }
 
-  enum trace_modes {
-    CRAWL_TRACE,
-    LINE_TRACE,
-    DDA_TRACE,
-  };
-
-  bool trace(int trace_mode = DDA_TRACE) {
-    // Cast rays thru horizon:
-    for (int x=0; x<VIEW_WIDTH; ++x) {
-
-      // Current map cell:
-      int mx = int(px); // Remember: casting to int() will round DOWN.
-      int my = int(py);
-      // (mx,my) is current map cell.
-
-      // Calculate the direction of THIS ray:
-      // First, camera x position along viewplane (-1 <= cx <= 1):
-      num cx = 2*x / num(VIEW_WIDTH) - 1;
-      num rx = dx + vx*cx;
-      num ry = dy + vy*cx;
-      // (rx,ry) is the ray vector.
-
-      num dist = 0;
-      num hx = px;
-      num hy = py;
+  bool trace() {
+    // Trace a ray for each screen column:
+    int screenWidth = VIEW_WIDTH;
+    for (int screenX = 0; screenX < screenWidth; ++screenX) {
+      // Get player's current map cell (but note that we'll modify these values in each iteration):
+      int mapX = int(playerX);
+      int mapY = int(playerY);
+      // Convert screenX to cameraX (i.e. proportional position along the viewplane):
+      num cameraX = 2*screenX / num(screenWidth) - 1.0; // cx = [-1,1)
+      // Work out the base vector for the ray that goes from the player, through this slit of the viewplane:
+      num rayDirX = headingX + viewX*cameraX;
+      num rayDirY = headingY + viewY*cameraX;
+      num rayMag = sqrt(rayDirX*rayDirX + rayDirY*rayDirY); // The magnitude of our base ray vector.
+      // Find out the distance our ray would normally travel to go from one full map grid line to the next,
+      // for grid lines on each of the X and Y axes. Work this out for the "forward" direction of the ray:
+      num stepX = (rayDirX>0) ? +1 : -1;
+      num stepY = (rayDirY>0) ? +1 : -1;
+      // What respective distances will we travel along the ray, with each step on X or Y gridlines?
+//NOTE: denominator could be 0!
+      num stepXdist = abs(rayMag/rayDirX); // rayMag is scaled by the ratio of the X step (1.0) to the nominal X step size for the ray (rayDirX).
+      num stepYdist = abs(rayMag/rayDirY);
+      // Track separate distance counters for tracing through X gridlines and Y gridlines.
+      // Start with the initial distances for each that reach the first gridlines;
+      // these are scaled versions of stepXdist and stepYdist, based on on where the
+      // camera origin (i.e. player) is within the current map cell.
+      num trackXdist = ((rayDirX>0) ? mapX+1-playerX : playerX-mapX)*stepXdist;
+      num trackYdist = ((rayDirY>0) ? mapY+1-playerY : playerY-mapY)*stepYdist;
+      // Now perform DDA (Digital Differential Analysis), to find the first (nearest) edge we hit
+      // that belongs to an occupied map cell:
+      uint32_t wallHit = 0;
       int side = 0;
-      uint32_t m = 0xffff00ff;
-
-      switch (trace_mode) {
-        case CRAWL_TRACE:
-        {
-          num e = 0.005;
-          int mmx;
-          int mmy;
-          for (int x=0; x<10000; ++x) {
-            dist += e;
-            hx += e*rx;
-            hy += e*ry;
-            mmx = int(hx);
-            mmy = int(hy);
-            if (mmx>=0 && mmx<MAP_WIDTH && mmy>=0 && mmy<MAP_HEIGHT) {
-              m = *(m_map.cell(mmx, mmy));
-              if (m) {
-                // We hit a wall.
-                //SMELL: A hack to determine if we hit a NS or EW edge of the wall:
-                side = abs(hx-floor(hx+0.5)) < abs(hy-floor(hy+0.5));
-                break;
-              }
-            }
-          }
-          break;
+      while (!wallHit) {
+        if (trackXdist < trackYdist) {
+          // If the X-tracking distance is currently the nearest, then it means our ray is intersecting
+          // now with an X gridline (vertical). In other words, it is entering the next X column
+          // so we'll want to inspect that first:
+          mapX += stepX;
+          // Meanwhile, make sure the next time we check our X-tracking distance, it has been
+          // advanced to match the start of the next X column, i.e. it is preemptively overshot:
+          trackXdist += stepXdist;
+          // We're inspecting an intersection at side 0 (X gridline, aka NS, aka vertical).
+          side = 0;
         }
-        case LINE_TRACE:
-        {
-          // Simple gridline intersection trace:
-          // What we know:
-          // - px,py is the precise player position.
-          // - mx,my is the current map cell.
-          // - rx,ry is the ray vector we need to trace. Its magnitude is important.
-          dist = MAP_WIDTH*MAP_WIDTH + MAP_HEIGHT*MAP_HEIGHT; // Start with a distance that is way bigger than we'll ever trace.
-          if (rx!=0) {
-            // Loop thru all vertical-running grid lines, testing intersections with map cells:
-            for (int x=0; x<MAP_WIDTH; ++x) {
-              // Find where this ray intersects with this grid line:
-              num xx = num(x);
-              if ( (xx-px)*rx < 0 ) continue; // Skip lines that are in the wrong direction.
-              num a = xx-px; // line segment run.
-              num s = a/rx; // scale factor; ratio of run to vector x component.
-              num b = s*ry; // line segment rise.
-              num d = a*a + b*b;
-              // Find exact floating point intersection of the ray with this vertical gridline:
-              num wx = px+a;
-              num wy = py+b;
-              if (rx<0) wx--; // From this perspective, walls face the other way.
-              if (int(wy)>=MAP_HEIGHT || int(wy)<0 || int(wx)>=MAP_WIDTH || int(wx)<0) continue; // out of map range.
-              // Find out what's in the map at this point:
-              uint32_t c = *m_map.cell(int(wx), int(wy));
-              if (!c) continue; // nothing here.
-              if (d < dist) {
-                // This intersection is closer:
-                dist = d;
-                m = c;
-                side = 0;
-                hx = wx;
-                hy = wy;
-              }
-            }
-          }
-          if (ry!=0) {
-            // Loop thru all vertical-running grid lines, testing intersections with map cells:
-            for (int y=0; y<MAP_HEIGHT; ++y) {
-              // Find where this ray intersects with this grid line:
-              num yy = num(y);
-              if ( (yy-py)*ry < 0 ) continue; // Skip lines that are in the wrong direction.
-              num a = yy-py; // line segment run.
-              num s = a/ry; // scale factor; ratio of run to vector x component.
-              num b = s*rx; // line segment rise.
-              num d = a*a + b*b;
-              // Find exact floating point intersection of the ray with this vertical gridline:
-              num wx = px+b;
-              num wy = py+a;
-              if (ry<0) wy--; // From this perspective, walls face the other way.
-              if (int(wy)>=MAP_HEIGHT || int(wy)<0 || int(wx)>=MAP_WIDTH || int(wx)<0) continue; // out of map range.
-              // Find out what's in the map at this point:
-              uint32_t c = *m_map.cell(int(wx), int(wy));
-              if (!c) continue; // nothing here.
-              if (d < dist) {
-                // This intersection is closer:
-                dist = d;
-                m = c;
-                side = 1;
-                hx = wx;
-                hy = wy;
-              }
-            }
-          }
-          dist = sqrt(dist)/sqrt(rx*rx+ry*ry);
-          break;
+        else {
+          mapY += stepY;
+          trackYdist += stepYdist;
+          side = 1;
         }
-        case DDA_TRACE:
-        {
-          // Fast DDA trace...
-
-          //NOTE: hx,hy are ray distances to H and V walls; 'h' for hypotenuse or hit distance.
-          // Calculate the distance we have to advance the ray for each of an X step and Y step in map grid:
-          num dx = (rx==0) ? 1e30 : abs(1/rx);
-          num dy = (ry==0) ? 1e30 : abs(1/ry);
-          // dx is the distance the ray must advance to move from one horizontal map cell to the next.
-          // dy is the equivalent for vertical advances.
-
-          // Calculate starting state:
-          // Map cell step directions:
-          int sx;
-          int sy;
-          if (rx < 0) { sx = -1; hx =     (px-mx) * dx; } // This ray steps W
-          else        { sx = +1; hx = (1.0+mx-px) * dx; } // This ray steps E
-          if (ry < 0) { sy = -1; hy =     (py-my) * dy; } // This ray steps N
-          else        { sy = +1; hy = (1.0+my-py) * dy; } // This ray steps S
-
-          uint32_t hit = 0;
-          while (!hit) {
-            if (hx < hy)  { hx += dx; mx += sx; side = 0; } // No hit yet, and hx distance hasn't yet caught up to hy distance.
-            else          { hy += dy; my += sy; side = 1; }
-            hit = *m_map.cell(mx, my);
-            if (mx<0 || mx>=MAP_WIDTH || my<0 || my>=MAP_HEIGHT) {
-              printf("\nRay escaped! %d,%d\n", mx, my);
-              throw "ERROR";
-            }
-          }
-          dist = (side==0) ? hx-dx : hy-dy;
-          hx = px + dist*rx;
-          hy = py + dist*ry;
-          m = hit;
-          break;
-        }
-      } // switch
-      m_traces[x].dist  = dist;
-      m_traces[x].hx    = hx;
-      m_traces[x].hy    = hy;
-      m_traces[x].side  = side;
-      m_traces[x].color = m;
+        // Is there a wall at our updated mapX,Y?
+        wallHit = *m_map.cell(mapX, mapY);
+      } // while
+      //NOTE: We assume the map has no holes, and that our player is not inside a wall,
+      // and hence we can assume we definitely have some wallHit value.
+      // Now, since we know we have a hit, "side" tells us which side (and hence which distance tracker)
+      // represents our hit. From this, we have to subtract one respective step distance
+      // because the algorithm above overshoots by 1 extra step in each iteration (as it was
+      // preparing for the next iteration):
+      num visualWallDist = ((side==0) ? (trackXdist-stepXdist) : (trackYdist-stepYdist)) / rayMag;
+      //NOTE: visualWallDist is the actual distance, but based on normalising the base ray length
+      // (i.e. inverse scaling such that the base ray length would be 1.0).
+      m_traces[screenX].side  = side;
+      m_traces[screenX].color = wallHit;
+      m_traces[screenX].dist  = visualWallDist;
+      m_traces[screenX].hx    = visualWallDist*rayDirX + playerX;
+      m_traces[screenX].hy    = visualWallDist*rayDirY + playerY;
     } // for
+    // Re hx,hy: Because visualWallDist is based on a normalised base ray...
+    //...then it is a real distance which we can multiply by the ray's X and Y to get a map-level hit position.
     return true;
   } // trace()
 
@@ -528,15 +442,18 @@ public:
     num ca = cos(a);
     num sa = sin(a);
     // Rotate direction vector:
-    nx =  dx*ca + dy*sa;
-    ny = -dx*sa + dy*ca;
-    dx = nx;
-    dy = ny;
-    // Rotate viewplane vector:
-    nx =  vx*ca + vy*sa;
-    ny = -vx*sa + vy*ca;
-    vx = nx;
-    vy = ny;
+    nx =  headingX*ca + headingY*sa;
+    ny = -headingX*sa + headingY*ca;
+    headingX = nx;
+    headingY = ny;
+    // Generate viewplane vector:
+    viewX = -headingY * viewMag;
+    viewY =  headingX * viewMag;
+    // // Rotate viewplane vector:
+    // nx =  viewX*ca + viewY*sa;
+    // ny = -viewX*sa + viewY*ca;
+    // viewX = nx;
+    // viewY = ny;
   }
 
   bool render(bool real_render=true) {
@@ -560,10 +477,10 @@ public:
     if (keys[SDL_SCANCODE_LEFT]) rotate(ts/3);
     if (keys[SDL_SCANCODE_RIGHT]) rotate(-ts/3);
     if (keys[SDL_SCANCODE_LSHIFT]) ts*=2;
-    if (keys[SDL_SCANCODE_W]) { px+=ts*dx; py+=ts*dy; }
-    if (keys[SDL_SCANCODE_S]) { px-=ts*dx; py-=ts*dy; }
-    if (keys[SDL_SCANCODE_A]) { px-=ts*vx; py-=ts*vy; }
-    if (keys[SDL_SCANCODE_D]) { px+=ts*vx; py+=ts*vy; }
+    if (keys[SDL_SCANCODE_W]) { playerX+=ts*headingX; playerY+=ts*headingY; }
+    if (keys[SDL_SCANCODE_S]) { playerX-=ts*headingX; playerY-=ts*headingY; }
+    if (keys[SDL_SCANCODE_A]) { playerX-=ts*viewX; playerY-=ts*viewY; }
+    if (keys[SDL_SCANCODE_D]) { playerX+=ts*viewX; playerY+=ts*viewY; }
     return true;
   }
 
