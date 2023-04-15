@@ -10,8 +10,8 @@
 // https://gamedev.stackexchange.com/a/135894
 
 
-#define VIEW_WIDTH  1800
-#define VIEW_HEIGHT 1350
+#define VIEW_WIDTH  1760
+#define VIEW_HEIGHT 1320
 // #define VIEW_WIDTH  640
 // #define VIEW_HEIGHT 480
 #define FBSIZE (VIEW_WIDTH*VIEW_HEIGHT*4)
@@ -26,9 +26,9 @@
 #define MAP_FILE "assets/raybox-map.png"
 #define MAP_WIDTH 64
 #define MAP_HEIGHT 64
-#define MAP_OVERLAY_SCALE 7
+#define MAP_OVERLAY_SCALE int(1320/MAP_HEIGHT)
 
-typedef double num;
+typedef float num;
 
 void describe_pixel_format(Uint32 format) {
   printf("Pixel format: %d (%x)\n", format, format);
@@ -134,6 +134,13 @@ public:
 
 };
 
+typedef struct {
+  num dist;
+  num hx, hy;
+  int side;
+  uint32_t color;
+} traced_column_t;
+
 class RayboxSystem {
 public:
 
@@ -152,6 +159,7 @@ public:
   uint64_t m_prevTime;
   uint64_t m_thisTime;
   uint64_t m_frequency;
+  traced_column_t m_traces[VIEW_WIDTH];
 
   RayboxSystem() {
     m_window = NULL;
@@ -293,64 +301,223 @@ public:
               // Filled square:
               T(m_fb, x, y) = m;
             }
+            else {
+              T(m_fb, x, y) = ((x&y)&1) ? 0xff333333 : 0xff111111;
+            }
           }
         }
       }
     }
+    // Render player position:
+    num ppx = px*MAP_OVERLAY_SCALE;
+    num ppy = py*MAP_OVERLAY_SCALE;
+    T(m_fb, int(ppx), int(ppy)) = 0xff00ffff;
+    // Render view vector:
+    for (int n=0; n<MAP_OVERLAY_SCALE; ++n) {
+      num nn = num(n)/num(MAP_OVERLAY_SCALE);
+      num vvx = ppx+dx*n;
+      num vvy = ppy+dy*n;
+      T(m_fb, int(vvx), int(vvy)) = 0xff00ffff;
+    }
     return true;
   }
 
-  bool render_view() {
-    // Current map cell:
-    int mx = int(px);
-    int my = int(py);
+  enum trace_modes {
+    CRAWL_TRACE,
+    LINE_TRACE,
+    DDA_TRACE,
+  };
+
+  bool trace(int trace_mode = DDA_TRACE) {
     // Cast rays thru horizon:
     for (int x=0; x<VIEW_WIDTH; ++x) {
 
+      // Current map cell:
+      int mx = int(px); // Remember: casting to int() will round DOWN.
+      int my = int(py);
+      // (mx,my) is current map cell.
+
       // Calculate the direction of THIS ray:
-      num cx = 2*x / num(VIEW_WIDTH) - 1; // Camera x position along viewplane (-1 <= cx <= 1).
+      // First, camera x position along viewplane (-1 <= cx <= 1):
+      num cx = 2*x / num(VIEW_WIDTH) - 1;
       num rx = dx + vx*cx;
       num ry = dy + vy*cx;
       // (rx,ry) is the ray vector.
 
-      // Naive ray trace by small increments:
       num dist = 0;
       num hx = px;
       num hy = py;
-      num e = 0.005;
-      int mmx;
-      int mmy;
       int side = 0;
-      uint32_t m;
-      for (int x=0; x<10000; ++x) {
-        dist += e;
-        hx += e*rx;
-        hy += e*ry;
-        mmx = int(hx);
-        mmy = int(hy);
-        if (mmx>=0 && mmx<MAP_WIDTH && mmy>=0 && mmy<MAP_HEIGHT) {
-          m = *(m_map.cell(mmx, mmy));
-          if (m) {
-            // We hit a wall.
-            //SMELL: A hack to determine if we hit a NS or EW edge of the wall:
-            side = abs(hx-floor(hx+0.5)) < abs(hy-floor(hy+0.5));
-            break;
-          }
-        }
-      }
-      // dist is now the distance from the player to the wall hit.
-      // (hx,hy) is the point of the hit, in map space.
-      // side is 0 (NS) or 1 (EW) depending on which side of a wall we hit.
+      uint32_t m = 0xffff00ff;
 
-      // Render this column:
-      int h = VIEW_HEIGHT/2/dist;
+      switch (trace_mode) {
+        case CRAWL_TRACE:
+        {
+          num e = 0.005;
+          int mmx;
+          int mmy;
+          for (int x=0; x<10000; ++x) {
+            dist += e;
+            hx += e*rx;
+            hy += e*ry;
+            mmx = int(hx);
+            mmy = int(hy);
+            if (mmx>=0 && mmx<MAP_WIDTH && mmy>=0 && mmy<MAP_HEIGHT) {
+              m = *(m_map.cell(mmx, mmy));
+              if (m) {
+                // We hit a wall.
+                //SMELL: A hack to determine if we hit a NS or EW edge of the wall:
+                side = abs(hx-floor(hx+0.5)) < abs(hy-floor(hy+0.5));
+                break;
+              }
+            }
+          }
+          break;
+        }
+        case LINE_TRACE:
+        {
+          // Simple gridline intersection trace:
+          // What we know:
+          // - px,py is the precise player position.
+          // - mx,my is the current map cell.
+          // - rx,ry is the ray vector we need to trace. Its magnitude is important.
+          dist = MAP_WIDTH*MAP_WIDTH + MAP_HEIGHT*MAP_HEIGHT; // Start with a distance that is way bigger than we'll ever trace.
+          if (rx!=0) {
+            // Loop thru all vertical-running grid lines, testing intersections with map cells:
+            for (int x=0; x<MAP_WIDTH; ++x) {
+              // Find where this ray intersects with this grid line:
+              num xx = num(x);
+              if ( (xx-px)*rx < 0 ) continue; // Skip lines that are in the wrong direction.
+              num a = xx-px; // line segment run.
+              num s = a/rx; // scale factor; ratio of run to vector x component.
+              num b = s*ry; // line segment rise.
+              num d = a*a + b*b;
+              // Find exact floating point intersection of the ray with this vertical gridline:
+              num wx = px+a;
+              num wy = py+b;
+              if (rx<0) wx--; // From this perspective, walls face the other way.
+              if (int(wy)>=MAP_HEIGHT || int(wy)<0 || int(wx)>=MAP_WIDTH || int(wx)<0) continue; // out of map range.
+              // Find out what's in the map at this point:
+              uint32_t c = *m_map.cell(int(wx), int(wy));
+              if (!c) continue; // nothing here.
+              if (d < dist) {
+                // This intersection is closer:
+                dist = d;
+                m = c;
+                side = 0;
+                hx = wx;
+                hy = wy;
+              }
+            }
+          }
+          if (ry!=0) {
+            // Loop thru all vertical-running grid lines, testing intersections with map cells:
+            for (int y=0; y<MAP_HEIGHT; ++y) {
+              // Find where this ray intersects with this grid line:
+              num yy = num(y);
+              if ( (yy-py)*ry < 0 ) continue; // Skip lines that are in the wrong direction.
+              num a = yy-py; // line segment run.
+              num s = a/ry; // scale factor; ratio of run to vector x component.
+              num b = s*rx; // line segment rise.
+              num d = a*a + b*b;
+              // Find exact floating point intersection of the ray with this vertical gridline:
+              num wx = px+b;
+              num wy = py+a;
+              if (ry<0) wy--; // From this perspective, walls face the other way.
+              if (int(wy)>=MAP_HEIGHT || int(wy)<0 || int(wx)>=MAP_WIDTH || int(wx)<0) continue; // out of map range.
+              // Find out what's in the map at this point:
+              uint32_t c = *m_map.cell(int(wx), int(wy));
+              if (!c) continue; // nothing here.
+              if (d < dist) {
+                // This intersection is closer:
+                dist = d;
+                m = c;
+                side = 1;
+                hx = wx;
+                hy = wy;
+              }
+            }
+          }
+          dist = sqrt(dist)/sqrt(rx*rx+ry*ry);
+          break;
+        }
+        case DDA_TRACE:
+        {
+          // Fast DDA trace...
+
+          //NOTE: hx,hy are ray distances to H and V walls; 'h' for hypotenuse or hit distance.
+          // Calculate the distance we have to advance the ray for each of an X step and Y step in map grid:
+          num dx = (rx==0) ? 1e30 : abs(1/rx);
+          num dy = (ry==0) ? 1e30 : abs(1/ry);
+          // dx is the distance the ray must advance to move from one horizontal map cell to the next.
+          // dy is the equivalent for vertical advances.
+
+          // Calculate starting state:
+          // Map cell step directions:
+          int sx;
+          int sy;
+          if (rx < 0) { sx = -1; hx =     (px-mx) * dx; } // This ray steps W
+          else        { sx = +1; hx = (1.0+mx-px) * dx; } // This ray steps E
+          if (ry < 0) { sy = -1; hy =     (py-my) * dy; } // This ray steps N
+          else        { sy = +1; hy = (1.0+my-py) * dy; } // This ray steps S
+
+          uint32_t hit = 0;
+          while (!hit) {
+            if (hx < hy)  { hx += dx; mx += sx; side = 0; } // No hit yet, and hx distance hasn't yet caught up to hy distance.
+            else          { hy += dy; my += sy; side = 1; }
+            hit = *m_map.cell(mx, my);
+            if (mx<0 || mx>=MAP_WIDTH || my<0 || my>=MAP_HEIGHT) {
+              printf("\nRay escaped! %d,%d\n", mx, my);
+              throw "ERROR";
+            }
+          }
+          dist = (side==0) ? hx-dx : hy-dy;
+          hx = px + dist*rx;
+          hy = py + dist*ry;
+          m = hit;
+          break;
+        }
+      } // switch
+      m_traces[x].dist  = dist;
+      m_traces[x].hx    = hx;
+      m_traces[x].hy    = hy;
+      m_traces[x].side  = side;
+      m_traces[x].color = m;
+    } // for
+    return true;
+  } // trace()
+
+
+  bool render_view() {
+    // Render each column:
+    for (int x=0; x<VIEW_WIDTH; ++x) {
+      traced_column_t &col = m_traces[x];
+      // .dist is the distance from the player to the wall hit.
+      // .color is the wall color.
+      // .hx,hy is the point of the hit, in map space.
+      // .side is 0 (NS) or 1 (EW) depending on which side of a wall we hit.
+      int h = VIEW_HEIGHT/2/col.dist;
       int y1 = (VIEW_HEIGHT>>1)-h;
-      int y2 = (VIEW_HEIGHT>>1)+h;
       if (y1<0) y1 = 0;
-      if (y2>VIEW_HEIGHT) y2=VIEW_HEIGHT;
-      for (int y=y1; y<y2; ++y) {
+      // int y2 = (VIEW_HEIGHT>>1)+h;
+      // if (y2>VIEW_HEIGHT) y2=VIEW_HEIGHT;
+
+      for (int t=-h; t<h; ++t) {
+        int y = t+VIEW_HEIGHT/2;
+        if (y<0 || y>=VIEW_HEIGHT) continue;
+        num tt = num(t+h)/num(h*2);
         // Darken, depending on the side we hit:
-        T(m_fb, x, y) = m & (side ? 0xffffffff : 0xffc0c0c0);
+        // T(m_fb, x, y) = col.color & (col.side ? 0xffffffff : 0xffc0c0c0);
+        int tx = int(64.0*(col.side ? col.hx : col.hy));
+        int ty = int(64.0*tt);
+
+        // int r = (fx&1)        ? 0x0000ff : 0x000000;
+        int g = (tx&4)^(ty&4) ? 0x00ff00 : 0x007000;
+        // int b = (fy&1)        ? 0xff0000 : 0x000000;
+        int r = 0;
+        int b = 0;
+        T(m_fb, x, y) = (r|g|b|0xff000000) & (col.side ? 0xffffffff : 0xffc0c0c0);
+        // T(m_fb, x, y) =  ? 0xff888888 : 0xffcc00cc;
       }
     }
     return true;
@@ -372,14 +539,16 @@ public:
     vy = ny;
   }
 
-  bool render() {
-    if (!render_backdrop()) return false;
-    // if (!render_random(50, 50, 50, 50)) return false;
-    if (!render_view()) return false;
-    if (m_show_map_overlay && !render_map()) return false;
-    SDL_UpdateTexture(m_texture, NULL, m_fb, VIEW_WIDTH*4);
-    SDL_RenderCopy(m_renderer, m_texture, NULL, NULL);
-    SDL_RenderPresent(m_renderer);
+  bool render(bool real_render=true) {
+    if (real_render) {
+      if (!render_backdrop()) return false;
+      // if (!render_random(50, 50, 50, 50)) return false;
+      if (!render_view()) return false;
+      if (m_show_map_overlay && !render_map()) return false;
+      SDL_UpdateTexture(m_texture, NULL, m_fb, VIEW_WIDTH*4);
+      SDL_RenderCopy(m_renderer, m_texture, NULL, NULL);
+      SDL_RenderPresent(m_renderer);
+    }
     ++m_frame;
     return true;
   }
@@ -388,12 +557,13 @@ public:
     const uint8_t *keys = SDL_GetKeyboardState(NULL);
     m_show_map_overlay = keys[SDL_SCANCODE_TAB];
     num ts = time_step()*3;
+    if (keys[SDL_SCANCODE_LEFT]) rotate(ts/3);
+    if (keys[SDL_SCANCODE_RIGHT]) rotate(-ts/3);
+    if (keys[SDL_SCANCODE_LSHIFT]) ts*=2;
     if (keys[SDL_SCANCODE_W]) { px+=ts*dx; py+=ts*dy; }
     if (keys[SDL_SCANCODE_S]) { px-=ts*dx; py-=ts*dy; }
     if (keys[SDL_SCANCODE_A]) { px-=ts*vx; py-=ts*vy; }
     if (keys[SDL_SCANCODE_D]) { px+=ts*vx; py+=ts*vy; }
-    if (keys[SDL_SCANCODE_LEFT]) rotate(ts/3);
-    if (keys[SDL_SCANCODE_RIGHT]) rotate(-ts/3);
     return true;
   }
 
@@ -421,24 +591,36 @@ public:
   }
 
   void run() {
+    static uint64_t initial_time = SDL_GetPerformanceCounter();
     bool quit = 0;
     m_prevTime = SDL_GetPerformanceCounter();
     m_frequency = SDL_GetPerformanceFrequency();
-    int fpsCount = 0;
+    int frame_count = 0;
     uint64_t fps_time = SDL_GetPerformanceCounter();
+    uint64_t fps_1sec = m_frequency;
+
     while (!quit) {
       m_thisTime = SDL_GetPerformanceCounter();
       if (!handle_events()) break;
       if (!handle_input()) break;
-      if (!render()) break;
-      m_prevTime = m_thisTime;
-      if (++fpsCount==10) {
-        fpsCount = 0;
-        uint64_t now = SDL_GetPerformanceCounter();
-        printf("FPS: %.1f\r", num(10)/(num(now-fps_time)/num(m_frequency)));
-        fflush(stdout);
+      if (!trace(DDA_TRACE)) break;
+      if (!render(true)) break;
+      ++frame_count;
+      uint64_t now = SDL_GetPerformanceCounter();
+      if (now-fps_time>=fps_1sec) {
+        // At least 1 second has elapsed. How many frames have we done?
+        uint64_t elapsed_time = now-initial_time;
+        printf(
+          "[%6.2f sec] Current FPS: %.2f - Overall FPS: %.2f\n",
+          num(elapsed_time)/num(fps_1sec),
+          num(frame_count)/(num(now-fps_time)/num(fps_1sec)),
+          num(m_frame)/(num(elapsed_time)/num(fps_1sec))
+        );
         fps_time = now;
+        frame_count = 0;
       }
+      
+      m_prevTime = m_thisTime;
     }
   }
 
