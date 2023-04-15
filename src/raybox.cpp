@@ -342,15 +342,16 @@ public:
       // Work out the base vector for the ray that goes from the player, through this slit of the viewplane:
       num rayDirX = headingX + viewX*cameraX;
       num rayDirY = headingY + viewY*cameraX;
-      num rayMag = sqrt(rayDirX*rayDirX + rayDirY*rayDirY); // The magnitude of our base ray vector.
       // Find out the distance our ray would normally travel to go from one full map grid line to the next,
       // for grid lines on each of the X and Y axes. Work this out for the "forward" direction of the ray:
       num stepX = (rayDirX>0) ? +1 : -1;
       num stepY = (rayDirY>0) ? +1 : -1;
       // What respective distances will we travel along the ray, with each step on X or Y gridlines?
-//NOTE: denominator could be 0!
-      num stepXdist = abs(rayMag/rayDirX); // rayMag is scaled by the ratio of the X step (1.0) to the nominal X step size for the ray (rayDirX).
-      num stepYdist = abs(rayMag/rayDirY);
+      //NOTE: denominator could be 0!
+      //NOTE: Because we end up treating these distances as though they are based on a normalised base ray,
+      // we can just use 1/axis instead of ||rayDir||/axis.
+      num stepXdist = abs(1.0/rayDirX);
+      num stepYdist = abs(1.0/rayDirY);
       // Track separate distance counters for tracing through X gridlines and Y gridlines.
       // Start with the initial distances for each that reach the first gridlines;
       // these are scaled versions of stepXdist and stepYdist, based on on where the
@@ -387,7 +388,7 @@ public:
       // represents our hit. From this, we have to subtract one respective step distance
       // because the algorithm above overshoots by 1 extra step in each iteration (as it was
       // preparing for the next iteration):
-      num visualWallDist = ((side==0) ? (trackXdist-stepXdist) : (trackYdist-stepYdist)) / rayMag;
+      num visualWallDist = ((side==0) ? (trackXdist-stepXdist) : (trackYdist-stepYdist));
       //NOTE: visualWallDist is the actual distance, but based on normalising the base ray length
       // (i.e. inverse scaling such that the base ray length would be 1.0).
       m_traces[screenX].side  = side;
@@ -520,7 +521,7 @@ public:
       m_thisTime = SDL_GetPerformanceCounter();
       if (!handle_events()) break;
       if (!handle_input()) break;
-      if (!trace(DDA_TRACE)) break;
+      if (!trace()) break;
       if (!render(true)) break;
       ++frame_count;
       uint64_t now = SDL_GetPerformanceCounter();
