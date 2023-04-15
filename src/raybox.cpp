@@ -407,33 +407,44 @@ public:
     // Render each column:
     for (int x=0; x<VIEW_WIDTH; ++x) {
       traced_column_t &col = m_traces[x];
+      uint32_t color = col.color & (col.side ? 0xffffffff : 0xffc0c0c0);
       // .dist is the distance from the player to the wall hit.
       // .color is the wall color.
       // .hx,hy is the point of the hit, in map space.
       // .side is 0 (NS) or 1 (EW) depending on which side of a wall we hit.
-      int h = VIEW_HEIGHT/2/col.dist;
-      int y1 = (VIEW_HEIGHT>>1)-h;
-      if (y1<0) y1 = 0;
-      // int y2 = (VIEW_HEIGHT>>1)+h;
-      // if (y2>VIEW_HEIGHT) y2=VIEW_HEIGHT;
-
-      for (int t=-h; t<h; ++t) {
-        int y = t+VIEW_HEIGHT/2;
-        if (y<0 || y>=VIEW_HEIGHT) continue;
-        num tt = num(t+h)/num(h*2);
-        // Darken, depending on the side we hit:
-        // T(m_fb, x, y) = col.color & (col.side ? 0xffffffff : 0xffc0c0c0);
-        int tx = int(64.0*(col.side ? col.hx : col.hy));
-        int ty = int(64.0*tt);
-
-        // int r = (fx&1)        ? 0x0000ff : 0x000000;
-        int g = (tx&4)^(ty&4) ? 0x00ff00 : 0x007000;
-        // int b = (fy&1)        ? 0xff0000 : 0x000000;
-        int r = 0;
-        int b = 0;
-        T(m_fb, x, y) = (r|g|b|0xff000000) & (col.side ? 0xffffffff : 0xffc0c0c0);
-        // T(m_fb, x, y) =  ? 0xff888888 : 0xffcc00cc;
+      int h = VIEW_HEIGHT/2/col.dist; //SMELL: Work out height correctly re view aspect ratio and FOV.
+      int stop = VIEW_HEIGHT/2+h;
+      if (stop > VIEW_HEIGHT) stop = VIEW_HEIGHT;
+      uint32_t *pxup, *pxdn;
+      int pitch = VIEW_WIDTH;
+      pxup = (uint32_t*)(m_fb+(VIEW_HEIGHT/2-1)*(pitch*4)+(x*4));
+      pxdn = pxup+pitch;
+      for (int v=VIEW_HEIGHT/2; v<stop; ++v) {
+        *pxup = color; pxup-=pitch;
+        *pxdn = color; pxdn+=pitch;
       }
+      // int y1 = (VIEW_HEIGHT>>1)-h;
+      // if (y1<0) y1 = 0;
+      // // int y2 = (VIEW_HEIGHT>>1)+h;
+      // // if (y2>VIEW_HEIGHT) y2=VIEW_HEIGHT;
+
+      // for (int t=-h; t<h; ++t) {
+      //   int y = t+VIEW_HEIGHT/2;
+      //   if (y<0 || y>=VIEW_HEIGHT) continue;
+      //   num tt = num(t+h)/num(h*2);
+      //   // Darken, depending on the side we hit:
+      //   // T(m_fb, x, y) = col.color & (col.side ? 0xffffffff : 0xffc0c0c0);
+      //   int tx = int(64.0*(col.side ? col.hx : col.hy));
+      //   int ty = int(64.0*tt);
+
+      //   // int r = (fx&1)        ? 0x0000ff : 0x000000;
+      //   int g = (tx&4)^(ty&4) ? 0x00ff00 : 0x007000;
+      //   // int b = (fy&1)        ? 0xff0000 : 0x000000;
+      //   int r = 0;
+      //   int b = 0;
+      //   T(m_fb, x, y) = (r|g|b|0xff000000) & (col.side ? 0xffffffff : 0xffc0c0c0);
+      //   // T(m_fb, x, y) =  ? 0xff888888 : 0xffcc00cc;
+      // }
     }
     return true;
   }
