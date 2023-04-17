@@ -10,12 +10,14 @@
 // https://gamedev.stackexchange.com/a/135894
 
 
-#define VIEW_WIDTH  1680 // 7:5 gives us square walls with an FOV of 70deg.
-#define VIEW_HEIGHT 1200
+// #define VIEW_WIDTH  1680 // 7:5 gives us square walls with an FOV of 70deg.
+// #define VIEW_HEIGHT 1200
+
 // #define VIEW_WIDTH  1760
 // #define VIEW_HEIGHT 1320
-// #define VIEW_WIDTH  640
-// #define VIEW_HEIGHT 480
+
+#define VIEW_WIDTH  640
+#define VIEW_HEIGHT 480
 #define FBSIZE (VIEW_WIDTH*VIEW_HEIGHT*4)
 
 #define S(fb,x,y,n) (fb[((x)+((y)*VIEW_WIDTH))*4+(n)])
@@ -30,7 +32,10 @@
 #define MAP_FILE "assets/raybox-map.png"
 #define MAP_WIDTH 64
 #define MAP_HEIGHT 64
-#define MAP_OVERLAY_SCALE int(1320/MAP_HEIGHT)
+#define MAP_OVERLAY_SCALE int(VIEW_HEIGHT/MAP_HEIGHT)
+
+//SMELL: Work out height correctly re view aspect ratio and FOV:
+#define HEIGHT_FROM_DIST(d) (VIEW_HEIGHT/2/(d))
 
 typedef float num;
 
@@ -166,6 +171,7 @@ public:
   uint64_t m_thisTime;
   uint64_t m_frequency;
   traced_column_t m_traces[VIEW_WIDTH];
+  bool m_capture_traces;
 
   RayboxSystem() {
     m_window = NULL;
@@ -176,6 +182,7 @@ public:
     m_img_init = false;
     m_frame = 0;
     m_show_map_overlay = false;
+    m_capture_traces = false;
     playerX = MAP_WIDTH>>1;
     playerY = MAP_HEIGHT>>1;
     headingX = 0;
@@ -412,7 +419,7 @@ public:
       // .color is the wall color.
       // .hx,hy is the point of the hit, in map space.
       // .side is 0 (NS) or 1 (EW) depending on which side of a wall we hit.
-      int h = VIEW_HEIGHT/2/col.dist; //SMELL: Work out height correctly re view aspect ratio and FOV.
+      int h = HEIGHT_FROM_DIST(col.dist);
       int stop = VIEW_HEIGHT/2+h;
       if (stop > VIEW_HEIGHT) stop = VIEW_HEIGHT;
       uint32_t *pxup, *pxdn;
@@ -504,6 +511,9 @@ public:
         switch (e.key.keysym.sym) {
           case SDLK_ESCAPE:
             return false;
+          case SDLK_c:
+            m_capture_traces = true;
+            break;
         }
       }
     }
@@ -517,6 +527,20 @@ public:
   num time_step() {
     num t = num(m_thisTime-m_prevTime)/num(m_frequency);
     return (t < 0.001) ? 0.001 : t;
+  }
+
+  void capture_traces() {
+    FILE *fp = fopen("traces_capture.bin", "wb");
+    for (int x=0; x<VIEW_WIDTH; ++x) {
+      traced_column_t &col = m_traces[x];
+      int h = HEIGHT_FROM_DIST(col.dist);
+      uint8_t height = h<=240 ? h : 240;
+      uint8_t side = col.side;
+      fwrite(&height, sizeof(height), 1, fp);
+      fwrite(&side, sizeof(side), 1, fp);
+    }
+    fclose(fp);
+    printf("capture_traces(): Wrote traces_capture.bin\n");
   }
 
   void run() {
@@ -533,6 +557,10 @@ public:
       if (!handle_events()) break;
       if (!handle_input()) break;
       if (!trace()) break;
+      if (m_capture_traces) {
+        m_capture_traces = false;
+        capture_traces();
+      }
       if (!render(true)) break;
       ++frame_count;
       uint64_t now = SDL_GetPerformanceCounter();
