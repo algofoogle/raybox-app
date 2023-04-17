@@ -530,17 +530,21 @@ public:
   }
 
   void capture_traces() {
-    FILE *fp = fopen("traces_capture.bin", "wb");
+    static int capture_count = 0;
+    char capture_filename[32];
+    sprintf(capture_filename, "traces_capture_%04d.hex", capture_count++);
+    FILE *fp = fopen(capture_filename, "wb");
+    fprintf(fp, "@00000000\n");
     for (int x=0; x<VIEW_WIDTH; ++x) {
       traced_column_t &col = m_traces[x];
       int h = HEIGHT_FROM_DIST(col.dist);
       uint8_t height = h<=240 ? h : 240;
       uint8_t side = col.side;
-      fwrite(&height, sizeof(height), 1, fp);
-      fwrite(&side, sizeof(side), 1, fp);
+      fprintf(fp, "%02X %02X", height, side);
+      fprintf(fp, (x%8==7) ? "\n" : " ");
     }
     fclose(fp);
-    printf("capture_traces(): Wrote traces_capture.bin\n");
+    printf("capture_traces(): Wrote %s\n", capture_filename);
   }
 
   void run() {
