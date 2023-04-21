@@ -1,3 +1,4 @@
 .vscode
 raybox
 traces_capture*.hex
+map_*.hex

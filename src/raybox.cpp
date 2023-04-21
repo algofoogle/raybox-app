@@ -514,6 +514,9 @@ public:
           case SDLK_c:
             m_capture_traces = true;
             break;
+          case SDLK_m:
+            dump_map();
+            break;
         }
       }
     }
@@ -529,6 +532,32 @@ public:
     return (t < 0.001) ? 0.001 : t;
   }
 
+  // Dumps the lower-right 16x16 region of the map as a .hex file,
+  // for use as a test map "ROM" in the raybox verilog code.
+  //NOTE: This dumps each map cell as a byte, packed like this:
+  // 0b00RRGGBB - i.e. it only preserves the upper 2 bits of each
+  // map colour. Note also that this writes in column-row order
+  // (i.e. row 0, col 0..15 -- then row 1, col 0..15 -- etc).
+  void dump_map() {
+    FILE *fp = fopen("map_16x16.hex", "wb");
+    fprintf(fp, "@00000000\n");
+    int counter = 0;
+    for (int y=MAP_HEIGHT-16; y<MAP_HEIGHT; ++y) {
+      for (int x=MAP_WIDTH-16; x<MAP_WIDTH; ++x) {
+        uint32_t m = *m_map.cell(x, y);
+        uint8_t r = (m&0xc00000)>>18;
+        uint8_t g = (m&0xc000)>>12;
+        uint8_t b = (m&0xc0)>>6;
+        fprintf(fp, "%02X%c", r|g|b, counter%16==15 ? '\n' : ' ');
+        ++counter;
+      }
+    }
+    fclose(fp);
+    printf("dump_map(): Wrote %s\n", "map_16x16.hex");
+  }
+
+  // Writes the current height & side values (that were last traced)
+  // to a .hex file that we can use for testing in the raybox verilog code.
   void capture_traces() {
     static int capture_count = 0;
     char capture_filename[32];
@@ -541,7 +570,7 @@ public:
       uint8_t height = h<=240 ? h : 240;
       uint8_t side = col.side;
       fprintf(fp, "%02X %02X", height, side);
-      fprintf(fp, (x%8==7) ? "\n" : " ");
+      fprintf(fp, (x%8==7) ? "\n" : " "); // Every 16 (i.e. 8x2) byte, start a new line.
     }
     fclose(fp);
     printf("capture_traces(): Wrote %s\n", capture_filename);
