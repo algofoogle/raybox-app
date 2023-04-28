@@ -39,6 +39,143 @@
 
 typedef float num;
 
+
+template <int M, int N> class TFixed {
+public:
+  // Masks to extract bit ranges from other number sources:
+  const uint64_t Ibound = 1<<(M-1);           // Boundary (beyond the limit) of what our integer can be.
+  const uint64_t Imask  = Ibound-1;           // Usable part of an existing integer, w/o sign bit.
+  const uint64_t SImask = (Imask<<1)|1;       // Usable part of an existing integer, inc. sign bit.
+  // Masks to extract bit ranges from stored values:
+  const uint64_t Smask  = (1<<(M-1))<<N;      // Sign bit mask of our stored value.
+  const uint64_t Mmask  = Imask<<N;           // Integer part (without sign bit).
+  const uint64_t Nmask  = (1<<N)-1;           // Fractional part.
+  const uint64_t SMmask = Smask|Mmask;        // Full integer part (inc. sign bit).
+  const uint64_t Amask  = SMmask|Nmask;       // Full fixed-point number mask.
+  const uint64_t Xmask  = ~Amask;            // Upper unused bits (for sign-padding).
+  uint64_t raw;
+  TFixed() {
+    raw = 0;
+  }
+  TFixed<M,N>& set(int other) {
+    // Ensure this int will fit:
+    if (other > 0 && other >=  Ibound) overflow();
+    if (other < 0 && other <  -Ibound) overflow();
+    // Shove usable bits into the space we have:
+    raw = (other & SImask)<<N;
+    // Sign extension:
+    if (other < 0) raw |= Xmask;
+    return *this;
+  }
+  TFixed<M,N>& set(num other) {
+    set(double(other));
+    return *this;
+  }
+  TFixed<M,N>& set(double other) {
+    if (other > 0 && other >=  double(Ibound)) overflow();
+    if (other < 0 && other <  -double(Ibound)) overflow();
+    double mul = (1<<N);
+    raw = (uint64_t(other*mul) & Amask);
+    if (other < 0) raw |= Xmask;
+    return *this;
+  }
+  TFixed<M,N>& operator=(double other) {
+    return set(other);
+  }
+  TFixed<M,N>& operator=(TFixed<M,N>& other) {
+    raw = other.raw;
+    return *this;
+  }
+  int sign() {
+    return (raw & Smask) ? -1 : 1;
+  }
+
+  TFixed<M,N> operator+(TFixed<M,N> other) {
+    TFixed<M,N> a;
+    // int s = sign();
+    // int os = other.sign();
+    a.raw = raw + other.raw;
+    // if (s == os && s != sign()) {
+    //   // Equal sign inputs, but sign has flipped.
+    //   overflow();
+    // }
+    return a;
+  }
+  TFixed<M,N>& operator+=(TFixed<M,N> other) {
+    raw += other.raw;
+    return *this;
+  }
+  TFixed<M,N>& operator+=(double other) {
+    TFixed<M,N> t;
+    t = other;
+    return (*this) += t;
+  }
+
+  TFixed<M,N> operator-() {
+    TFixed<M,N> a;
+    a.raw = -raw;
+    return a;
+  }
+  TFixed<M,N> operator-(TFixed<M,N> other) {
+    return (*this) + -other;
+  }
+  TFixed<M,N>& operator-=(TFixed<M,N> other) {
+    raw -= other.raw;
+    return *this;
+  }
+
+  void print(const char *prefix = NULL) {
+    // print(Ibound, false, "Ibound");
+    // print(Imask,  false, "Imask");
+    // print(SImask, false, "SImask");
+    // print(Smask,  false, "Smask");
+    // print(Mmask,  false, "Mmask");
+    // print(Nmask,  false, "Nmask");
+    // print(SMmask, false, "SMmask");
+    // print(Amask,  false, "Amask");
+    // print(Xmask,  false, "Xmask");
+    print(raw, true, prefix);
+  }
+  void print(uint64_t t, bool explode = false, const char *prefix = NULL) {
+    if (prefix) printf("%6s: ", prefix);
+    for (int i = 63; i >= 0; --i) {
+      uint64_t v = (t&(1UL<<i));
+      if (explode) {
+        if (i>=M+N)       { putc( v ? '#' : '-', stdout ); } // X bits.
+        if (i==M+N-1)     { putc(':', stdout); } // Start sign wrapper.
+        if (i==N-1)       { putc('.', stdout); } // Dot.
+        if (i<M+N)        { putc( v ? '1' : '0', stdout ); }
+        if (i==M+N-1)     { putc(':', stdout); } // End sign wrapper.
+      } else {
+        putc( v ? '1' : '0', stdout );
+      }
+    }
+    printf(" = %016lX = %18.12lf\n", t, get_double());
+  }
+  operator int() {
+    return raw >> N;
+  }
+  double get_double() {
+    uint64_t t = raw;
+    bool neg = t & Smask;
+    if (neg) t = -t; // Negate first.
+    double d = double(t & Amask) / double(1<<N);
+    return neg ? -d : d;
+  }
+  operator double() {
+    return get_double();
+  }
+  void overflow() {
+    //TODO: Throw some overflow exception.
+    throw std::range_error("TFixed overflow");
+  }
+};
+
+typedef TFixed<6,10> Fixed6_10; // 16-bit.
+typedef TFixed<6,14> Fixed6_14; // 20-bit.
+typedef Fixed6_14 fixed;
+
+
 void describe_pixel_format(Uint32 format) {
   printf("Pixel format: %d (%x)\n", format, format);
   printf(
@@ -337,6 +474,46 @@ public:
     return true;
   }
 
+  // Fixed-point tracer, trying to mimic how raybox Verilog version does it:
+  bool trace_fixed() {
+    fixed a;
+    fixed b;
+    num foo = 29.675;
+    a =  8.409;
+    b = -1.721;
+    a.print("a");
+    b.print("b");
+    fixed c = a + b;
+    c.print("c=a+b");
+    (-a).print("-a");
+
+    fixed d;
+    d = foo;
+    d.print("d");
+    d -= a;
+    d.print("d-=a");
+    d -= a;
+    d.print("d-=a");
+    d -= a;
+    d.print("d-=a");
+    d -= a;
+    d.print("d-=a");
+    d -= a;
+    d.print("d-=a");
+    d = a - b;
+    d.print("d=a-b");
+    d -= -d;
+    d.print("d-=-d");
+    d += 5;
+    d.print("d-=-d");
+    d += 5;
+    d.print("d-=-d");
+    d += 5;
+    d.print("d-=-d");
+
+    return false;
+  }
+
   bool trace() {
     // Trace a ray for each screen column:
     int screenWidth = VIEW_WIDTH;
@@ -430,28 +607,6 @@ public:
         *pxup = color; pxup-=pitch;
         *pxdn = color; pxdn+=pitch;
       }
-      // int y1 = (VIEW_HEIGHT>>1)-h;
-      // if (y1<0) y1 = 0;
-      // // int y2 = (VIEW_HEIGHT>>1)+h;
-      // // if (y2>VIEW_HEIGHT) y2=VIEW_HEIGHT;
-
-      // for (int t=-h; t<h; ++t) {
-      //   int y = t+VIEW_HEIGHT/2;
-      //   if (y<0 || y>=VIEW_HEIGHT) continue;
-      //   num tt = num(t+h)/num(h*2);
-      //   // Darken, depending on the side we hit:
-      //   // T(m_fb, x, y) = col.color & (col.side ? 0xffffffff : 0xffc0c0c0);
-      //   int tx = int(64.0*(col.side ? col.hx : col.hy));
-      //   int ty = int(64.0*tt);
-
-      //   // int r = (fx&1)        ? 0x0000ff : 0x000000;
-      //   int g = (tx&4)^(ty&4) ? 0x00ff00 : 0x007000;
-      //   // int b = (fy&1)        ? 0xff0000 : 0x000000;
-      //   int r = 0;
-      //   int b = 0;
-      //   T(m_fb, x, y) = (r|g|b|0xff000000) & (col.side ? 0xffffffff : 0xffc0c0c0);
-      //   // T(m_fb, x, y) =  ? 0xff888888 : 0xffcc00cc;
-      // }
     }
     return true;
   }
@@ -620,10 +775,11 @@ public:
 int main(int argc, char **argv) {
 
   RayboxSystem raybox;
-  raybox.prep();
-  raybox.load_map(MAP_FILE);
-  raybox.debug_print();
-  raybox.run();
+  raybox.trace_fixed();
+  // raybox.prep();
+  // raybox.load_map(MAP_FILE);
+  // raybox.debug_print();
+  // raybox.run();
 
   printf("Bye!\n");
 
