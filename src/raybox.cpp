@@ -29,6 +29,7 @@
 
 #define PI 3.141592653589793
 
+#define SPRITE_FILE "assets/wolf3d-guard-sprite0.png"
 #define MAP_FILE "assets/raybox-map.png"
 #define MAP_WIDTH 64
 #define MAP_HEIGHT 64
@@ -65,12 +66,13 @@ void describe_pixel_format(Uint32 format) {
 // typedef std::tuple<int,int> PlayerStart;
 typedef struct { int x, y; } PlayerStart;
 typedef std::list<PlayerStart> PlayerStarts;
-
+typedef struct { num x, y; } ActorPos;
 
 class RayboxMap {
 public:
   uint32_t m_map[MAP_WIDTH*MAP_HEIGHT]; // Map is stored as BGRX. //SMELL: Use 2D array instead to simplify derefs?
   PlayerStarts m_player_starts;
+  ActorPos m_sprite_pos;
 
   RayboxMap() {
     // Init a usable, but dummy map.
@@ -89,6 +91,8 @@ public:
       }
     }
     m_player_starts.push_back(start);
+    m_sprite_pos.x = 30.0;
+    m_sprite_pos.y = 52.0;
   }
 
   uint32_t *cell(int x, int y) {
@@ -126,10 +130,14 @@ public:
     int m;
     for (int y=0; y<MAP_HEIGHT; ++y) {
       for (int x=0; x<MAP_WIDTH; ++x) {
-        m = 
-          ((*cell(x,y)&0x000000ff) ? 1 : 0) | // blue.
-          ((*cell(x,y)&0x0000ff00) ? 2 : 0) | // green.
-          ((*cell(x,y)&0x00ff0000) ? 4 : 0);  // red.
+        if (m_sprite_pos.x==x && m_sprite_pos.y==y) {
+          m = 16; //@
+        } else {
+          m = 
+            ((*cell(x,y)&0x000000ff) ? 1 : 0) | // blue.
+            ((*cell(x,y)&0x0000ff00) ? 2 : 0) | // green.
+            ((*cell(x,y)&0x00ff0000) ? 4 : 0);  // red.
+        }
         putchar(m ? m+'0' : ' ');
       }
       printf("\n");
@@ -148,7 +156,118 @@ typedef struct {
   num hx, hy;
   int side;
   uint32_t color;
+  int sprite;       // ID of sprite that was hit. 0 means none.
+  num sprite_dist;
+  int sprite_col;   // Column of the sprite.
 } traced_column_t;
+
+
+typedef struct {
+  num x, y;   // Map position.
+  num dist;   // After transform: distance (hence scaling).
+  int col;    // After transform: column.
+} sprite_place_t;
+
+
+class RawImage {
+public:
+  uint8_t* m_raw;
+  int width;
+  int height;
+  bool valid;
+  RawImage() {
+    width = 0;
+    height = 0;
+    m_raw = NULL;
+    valid = false;
+  }
+  RawImage(const char* texture_file, int expect_width=0, int expect_height=0) : RawImage() {
+    load_image(texture_file, expect_width, expect_height);
+  }
+  ~RawImage() {
+    if (m_raw) delete m_raw;
+  }
+  void load_image(const char* f, int xw=0, int xh=0) {
+    SDL_Surface* s = IMG_Load(f);
+    if (!s) {
+      printf("ERROR: Failed to load texture image file '%s' due to error '%s'\n", f, SDL_GetError());
+      return;
+    }
+    width = s->w;
+    height = s->h;
+    if ( (xw && xw != width) || (xh && xh != height) ) {
+      printf("ERROR: Image '%s' should be %dx%d pixels, but is: %dx%d\n", f, xw, xh, width, height);
+      SDL_FreeSurface(s);
+      return;
+    }
+    Uint32 fmt = s->format->format;
+    if (fmt != SDL_PIXELFORMAT_RGB24) {
+      printf("ERROR: Image '%s' is wrong pixel format. Was expecting %x but got %x\n", f, SDL_PIXELFORMAT_RGB24, fmt);
+      SDL_FreeSurface(s);
+      return;
+    }
+    // Load raw image data...
+    SDL_LockSurface(s);
+    m_raw = new uint8_t[width*height*3];
+    for (int y = 0; y < height; ++y) {
+      // Copy line by line, because of s->pitch.
+      memcpy(m_raw + y*width*3, ((uint8_t*)(s->pixels)) + y*s->pitch, width*3 );
+    }
+    SDL_UnlockSurface(s);
+    // Done:
+    SDL_FreeSurface(s);
+    valid = true;
+  }
+  uint8_t* rgba(int x, int y) {
+    static uint8_t bad[4] = {255,0,0,255};
+    if (!valid) {
+      return bad;
+    }
+    return m_raw+((y*width)+x)*3;
+  }
+  uint8_t r(int x, int y) { return rgba(x,y)[0]; }
+  uint8_t g(int x, int y) { return rgba(x,y)[1]; }
+  uint8_t b(int x, int y) { return rgba(x,y)[2]; }
+  // uint8_t a(int x, int y) { return rgba(x,y)[3]; }
+};
+
+
+// // Texture file is expected to be a 24-bit PNG that is 128x64px, with the left
+// // half of it being "bright" wall, and right half "dark" wall.
+// // Only the upper 2 bits should be used in each of the R,G,B channels, to be
+// // compatible with how Raybox currently works. The code just picks off the
+// // upper 2 bits of each channel anyway.
+// void load_texture_rom(const char *texture_file) {
+//   RawImage tex(texture_file, 128, 64);
+//   if (!tex.valid) {
+//     printf("ERROR: Texture ROM image %s is invalid\n", texture_file);
+//   } else {
+//     printf("DEBUG: Loaded texture ROM image %s\n", texture_file);
+//   }
+//   // Transfer texture image data into the design's wall_textures ROM,
+//   // while also writing out to assets/texture-xrgb-2222.hex:
+//   const char* tex_dump = "assets/texture-xrgb-2222.hex";
+//   printf("Dumping texture data to %s\n", tex_dump);
+//   FILE *f = fopen(tex_dump, "w");
+//   fprintf(f, "@00000000\n");
+//   int counter = 0;
+//   for (int x=0; x<tex.width; ++x) {
+//     for (int y=0; y<tex.height; ++y) {
+//       uint8_t r = (tex.r(x, y) & 0xC0) >> 6; // Upper 2 bits only.
+//       uint8_t g = (tex.g(x, y) & 0xC0) >> 6; // Upper 2 bits only.
+//       uint8_t b = (tex.b(x, y) & 0xC0) >> 6; // Upper 2 bits only.
+//       uint8_t v = (r<<4) | (g<<2) | (b);
+//       // TB->m_core->DESIGN->wall_textures->data[x][y] = v;
+//       fprintf(f, "%02X%c", v, counter%16==15 ? '\n' : ' ');
+//       ++counter;
+//     }
+//   }
+//   printf("DEBUG: Transferred texture ROM into raybox.wall_textures\n");
+//   fclose(f);
+// }
+
+
+
 
 class RayboxSystem {
 public:
@@ -172,6 +291,8 @@ public:
   uint64_t m_frequency;
   traced_column_t m_traces[VIEW_WIDTH];
   bool m_capture_traces;
+  RawImage m_sprite;
+  sprite_place_t m_sprites[1];
 
   RayboxSystem() {
     m_window = NULL;
@@ -183,6 +304,8 @@ public:
     m_frame = 0;
     m_show_map_overlay = false;
     m_capture_traces = false;
+    m_sprites[0].x = 30.5;
+    m_sprites[0].y = 55.5;
     playerX = MAP_WIDTH>>1;
     playerY = MAP_HEIGHT>>1;
     headingX = 0;
@@ -202,6 +325,45 @@ public:
     if (m_window) SDL_DestroyWindow(m_window);
     if (m_video_init) SDL_Quit(); //SMELL: Match each SDL_InitSubSystem() instead?
     printf("Goodbye\n");
+  }
+
+  // // Texture file is expected to be a 24-bit PNG that is 128x64px, with the left
+  // // half of it being "bright" wall, and right half "dark" wall.
+  // // Only the upper 2 bits should be used in each of the R,G,B channels, to be
+  // // compatible with how Raybox currently works. The code just picks off the
+  // // upper 2 bits of each channel anyway.
+  // void load_texture_rom(const char *texture_file) {
+  //   RawImage tex(texture_file, 128, 64);
+  //   if (!tex.valid) {
+  //     printf("ERROR: Texture ROM image %s is invalid\n", texture_file);
+  //   } else {
+  //     printf("DEBUG: Loaded texture ROM image %s\n", texture_file);
+  //   }
+  //   // Transfer texture image data into the design's wall_textures ROM,
+  //   // while also writing out to assets/texture-xrgb-2222.hex:
+  //   const char* tex_dump = "assets/texture-xrgb-2222.hex";
+  //   printf("Dumping texture data to %s\n", tex_dump);
+  //   FILE *f = fopen(tex_dump, "w");
+  //   fprintf(f, "@00000000\n");
+  //   int counter = 0;
+  //   for (int x=0; x<tex.width; ++x) {
+  //     for (int y=0; y<tex.height; ++y) {
+  //       uint8_t r = (tex.r(x, y) & 0xC0) >> 6; // Upper 2 bits only.
+  //       uint8_t g = (tex.g(x, y) & 0xC0) >> 6; // Upper 2 bits only.
+  //       uint8_t b = (tex.b(x, y) & 0xC0) >> 6; // Upper 2 bits only.
+  //       uint8_t v = (r<<4) | (g<<2) | (b);
+  //       // TB->m_core->DESIGN->wall_textures->data[x][y] = v;
+  //       fprintf(f, "%02X%c", v, counter%16==15 ? '\n' : ' ');
+  //       ++counter;
+  //     }
+  //   }
+  //   printf("DEBUG: Transferred texture ROM into raybox.wall_textures\n");
+  //   fclose(f);
+  // }
+
+  bool load_sprite(const char *sprite_file) {
+    m_sprite.load_image(sprite_file, 64, 64);
+    return true;
   }
 
   bool load_map(const char *map_file) {
@@ -337,6 +499,8 @@ public:
     return true;
   }
 
+  
+
   bool trace() {
     // Trace a ray for each screen column:
     int screenWidth = VIEW_WIDTH;
@@ -403,9 +567,59 @@ public:
       m_traces[screenX].dist  = visualWallDist;
       m_traces[screenX].hx    = visualWallDist*rayDirX + playerX;
       m_traces[screenX].hy    = visualWallDist*rayDirY + playerY;
+      // Re hx,hy: Because visualWallDist is based on a normalised base ray...
+      //...then it is a real distance which we can multiply by the ray's X and Y to get a map-level hit position.
+
+
+
+      // Now check if we've got a sprite hit.
+      // Find intersection of this ray with the sprite's plane (which is our vplane vector).
+      // Find t1 or t2 where:
+      //    P + R * t1 = S + V * t2
+
+      num Px = playerX;
+      num Py = playerY;
+      num Sx = m_map.m_sprite_pos.x + 0.5;
+      num Sy = m_map.m_sprite_pos.y + 0.5;
+      num Rx = rayDirX;
+      num Ry = rayDirY;
+      //NOTE: Using vplane vector requires post-scaling by viewMag:
+      // num Vx = viewX;
+      // num Vy = viewY;
+      // num det = Vy*Rx - Vx*Ry;
+      //NOTE: Using a vector perpendicular to heading -- i.e. (-hY,hX) -- gives our unit scaling:
+      num Vx = -headingY;
+      num Vy =  headingX;
+      num det = Vy*Rx - Vx*Ry;
+      // //NOTE: Using perpendicular ray dir vector could allow for interesting optimisations:
+      // // - We can set det to 1 (i.e. get rid of it) -- if we don't, the sprite appears cylindrical.
+      // // - But we find that it rotates the sprite plane AWAY from us when we do that.
+      // num Vx = -Ry;
+      // num Vy =  Rx;
+      // num det = 1;
+
+      num t1 = (Vx*(Py-Sy) - Vy*(Px-Sx))/det; // t1 is distance, and determines height.
+
+      num t2 = (Px + Rx*t1 - Sx) / Vx;// * viewMag; // t2 is sprite offset, and determines sprite texture column.
+
+      m_traces[screenX].sprite_dist = t1;
+      if (t2<-0.5 || t2>0.5) m_traces[screenX].sprite_dist = 0;
+      m_traces[screenX].sprite_col = int((t2+0.5)*64.0);
+
     } // for
-    // Re hx,hy: Because visualWallDist is based on a normalised base ray...
-    //...then it is a real distance which we can multiply by the ray's X and Y to get a map-level hit position.
+
+    // Transform sprite map positions into camera space:
+    for (int n=0; n<1; ++n) { //SMELL: Dummy loop, to later support more sprites.
+      sprite_place_t &s = m_sprites[n];
+      num spriteRelX  = s.x-playerX;
+      num spriteRelY  = s.y-playerY;
+      num invDet      =    1.0 / (     viewX*headingY   -      viewY*headingX  );
+      num transformX  = invDet * (spriteRelX*headingY   - spriteRelY*headingX  );
+      s.dist          = invDet * (     viewX*spriteRelY -      viewY*spriteRelX);
+      s.col           = int( (screenWidth/2) * (1 + transformX/s.dist) );
+    }
+
+
     return true;
   } // trace()
 
@@ -414,12 +628,29 @@ public:
     // Render each column:
     for (int x=0; x<VIEW_WIDTH; ++x) {
       traced_column_t &col = m_traces[x];
-      uint32_t color = col.color & (col.side ? 0xffffffff : 0xffc0c0c0);
       // .dist is the distance from the player to the wall hit.
       // .color is the wall color.
       // .hx,hy is the point of the hit, in map space.
       // .side is 0 (NS) or 1 (EW) depending on which side of a wall we hit.
-      int h = HEIGHT_FROM_DIST(col.dist);
+      bool sprite = false;
+      int h;
+      uint32_t color;
+
+      if (col.sprite_dist>0 && col.sprite_dist < col.dist) {
+        // Sprite hit first.
+        h = HEIGHT_FROM_DIST(col.sprite_dist);
+        int sc = col.sprite_col;
+        sprite = true;
+        // if (sc < 64 && sc >= 0) sprite = true;
+        color = 0xff000000 + (sc<<10);
+      }
+
+      if (!sprite) {
+        // Wall hit first.
+        h = HEIGHT_FROM_DIST(col.dist);
+        color = col.color & (col.side ? 0xffffffff : 0xffc0c0c0);
+      }
+
       int stop = VIEW_HEIGHT/2+h;
       if (stop > VIEW_HEIGHT) stop = VIEW_HEIGHT;
       uint32_t *pxup, *pxdn;
@@ -453,6 +684,32 @@ public:
       //   // T(m_fb, x, y) =  ? 0xff888888 : 0xffcc00cc;
       // }
     }
+
+    // Now render the sprite(s) over the top:
+    for (int n=0; n<1; ++n) { //SMELL: Dummy loop, to later support more sprites.
+      sprite_place_t &s = m_sprites[n];
+      int sx = s.col;
+      uint32_t transparent = 0xFFFFFF&*(uint32_t*)(m_sprite.rgba(0,0)); // Use top-left colour to define transparent RGB value.
+      int spriteSize = HEIGHT_FROM_DIST(s.dist);
+      for (int x=0; x<VIEW_WIDTH; ++x) {
+        if (x<sx-spriteSize) continue;
+        if (x>sx+spriteSize) continue;
+        for (int y=0; y<VIEW_HEIGHT; ++y) {
+          if (s.dist>m_traces[x].dist) continue;
+          if (/*x>=sx-spriteSize && x<sx+spriteSize &&*/ y>=VIEW_HEIGHT/2-spriteSize && y<VIEW_HEIGHT/2+spriteSize) {
+            int texX = int(64.0*num(x-sx-spriteSize)/num(spriteSize*2.0)) & 63;
+            int texY = int(64.0*num(y-(VIEW_HEIGHT/2-spriteSize))/num(spriteSize*2.0)) & 63;
+            uint8_t* c = m_sprite.rgba(texX,texY);
+            if ((0xFFFFFF&*(uint32_t*)c) == transparent) continue;
+            R(m_fb, x, y) = c[0];
+            G(m_fb, x, y) = c[1];
+            B(m_fb, x, y) = c[2];
+            A(m_fb, x, y) = 255;
+          }
+        } // Y loop
+      } // X loop
+    }
+
     return true;
   }
 
@@ -566,9 +823,12 @@ public:
     fprintf(fp, "@00000000\n");
     for (int x=0; x<VIEW_WIDTH; ++x) {
       traced_column_t &col = m_traces[x];
-      int h = HEIGHT_FROM_DIST(col.dist);
-      uint8_t height = h<=240 ? h : 240;
-      uint8_t side = col.side;
+      int h;
+      uint8_t height;
+      uint8_t side;
+      h = HEIGHT_FROM_DIST(col.sprite_dist);
+      side = col.side;
+      height = h<=240 ? h : 240;
       fprintf(fp, "%02X %02X", height, side);
       fprintf(fp, (x%8==7) ? "\n" : " "); // Every 16 (i.e. 8x2) byte, start a new line.
     }
@@ -622,6 +882,7 @@ int main(int argc, char **argv) {
   RayboxSystem raybox;
   raybox.prep();
   raybox.load_map(MAP_FILE);
+  raybox.load_sprite(SPRITE_FILE);
   raybox.debug_print();
   raybox.run();
 
